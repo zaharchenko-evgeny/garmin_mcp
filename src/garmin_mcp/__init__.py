@@ -161,13 +161,18 @@ def init_api(email, password):
             file=sys.stderr,
         )
 
-        # Using Oauth1 and Oauth2 tokens from base64 encoded string
-        # print(
-        #     f"Trying to login to Garmin Connect using token data from file '{tokenstore_base64}'...\n"
-        # )
-        # dir_path = os.path.expanduser(tokenstore_base64)
-        # with open(dir_path, "r") as token_file:
-        #     tokenstore = token_file.read()
+        # Prefer a base64-encoded token file when present. This is the headless
+        # path: garminconnect.login() accepts the decoded token JSON string
+        # directly, so no token directory needs to exist on the host.
+        login_arg = tokenstore
+        b64_file = os.path.expanduser(tokenstore_base64)
+        if os.path.isfile(b64_file):
+            print(
+                f"Trying to login to Garmin Connect using base64 token file '{tokenstore_base64}'...\n",
+                file=sys.stderr,
+            )
+            with open(b64_file, "r") as token_file:
+                login_arg = base64.b64decode(token_file.read().strip()).decode()
 
         # Suppress stderr for token validation to avoid confusing library errors
         old_stderr = sys.stderr
@@ -175,7 +180,7 @@ def init_api(email, password):
 
         try:
             garmin = Garmin(is_cn=is_cn)
-            garmin.login(tokenstore)
+            garmin.login(login_arg)
         finally:
             sys.stderr = old_stderr
 
@@ -303,6 +308,17 @@ def main():
     courses.configure(garmin_client)
     activity_analysis.configure(garmin_client)
 
+    # Decide transport up front. Default is stdio (unchanged behaviour for
+    # local Claude Desktop). When GARMIN_MCP_TRANSPORT is http/streamable-http
+    # the server listens on a TCP port instead, so it can run inside Docker and
+    # be reached over the network (e.g. behind the OAuth gateway).
+    transport = os.getenv("GARMIN_MCP_TRANSPORT", "stdio").strip().lower()
+    http_mode = transport in ("http", "streamable-http", "streamable_http")
+    if http_mode:
+        # FastMCP reads host/port from these env vars at construction time.
+        os.environ.setdefault("FASTMCP_HOST", os.getenv("GARMIN_MCP_HOST", "0.0.0.0"))
+        os.environ.setdefault("FASTMCP_PORT", os.getenv("GARMIN_MCP_PORT", "8000"))
+
     # Create the MCP app, wrapped so the env-var filter can drop tools
     app = _ToolFilter(FastMCP("Garmin Connect v1.0"), enabled_tools, disabled_tools)
     if enabled_tools:
@@ -339,7 +355,21 @@ def main():
         )
 
     # Run the MCP server
-    app.run()
+    if http_mode:
+        # Set bind host/port directly on the FastMCP settings object — relying on
+        # the FASTMCP_* env vars proved unreliable across SDK versions (it bound
+        # to 127.0.0.1 inside the container, unreachable via Docker port mapping).
+        host = os.getenv("GARMIN_MCP_HOST", "0.0.0.0")
+        port = int(os.getenv("GARMIN_MCP_PORT", "8000"))
+        app.settings.host = host
+        app.settings.port = port
+        print(
+            f"Starting Garmin MCP over streamable-http on {host}:{port}/mcp",
+            file=sys.stderr,
+        )
+        app.run(transport="streamable-http")
+    else:
+        app.run()
 
 
 if __name__ == "__main__":
