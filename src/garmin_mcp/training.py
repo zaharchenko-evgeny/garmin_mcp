@@ -12,6 +12,11 @@ garmin_client = None
 # Cache for activity type mapping
 _activity_type_cache: Optional[Dict[int, str]] = None
 
+_VO2_MAX_SPORT_KEYS = {
+    "running": ("generic", "running"),
+    "cycling": ("cycling",),
+}
+
 
 def configure(client):
     """Configure the module with the Garmin client instance"""
@@ -67,6 +72,78 @@ def _map_contributor(
         result["group"] = group_names.get(group, f"group_{group}")
 
     return result
+
+
+def _normalize_vo2max_sport(sport: str) -> Optional[str]:
+    """Normalize user-facing VO2 max sport names to Garmin payload keys."""
+    normalized = sport.strip().lower().replace("-", "_")
+    aliases = {
+        "run": "running",
+        "running": "running",
+        "generic": "running",
+        "bike": "cycling",
+        "biking": "cycling",
+        "cycle": "cycling",
+        "cycling": "cycling",
+    }
+    return aliases.get(normalized)
+
+
+def _first_vo2max_container(data: Any) -> Dict[str, Any]:
+    """Garmin max metrics returns a one-item list; training status returns a dict."""
+    if isinstance(data, list):
+        if not data or not isinstance(data[0], dict):
+            return {}
+        return data[0]
+    if isinstance(data, dict):
+        return data.get("mostRecentVO2Max") or data
+    return {}
+
+
+def _extract_vo2max(data: Any, sport: str) -> Optional[float]:
+    """Extract sport-specific VO2 max from Garmin max metrics/training status data."""
+    precise = _extract_vo2max_metric(data, sport, "vo2MaxPreciseValue")
+    if precise is not None:
+        return precise
+    return _extract_vo2max_metric(data, sport, "vo2MaxValue")
+
+
+def _extract_vo2max_metric(data: Any, sport: str, metric: str) -> Optional[float]:
+    """Extract a specific Garmin VO2 max metric for a sport."""
+    container = _first_vo2max_container(data)
+    if not container:
+        return None
+
+    for key in _VO2_MAX_SPORT_KEYS[sport]:
+        sport_data = container.get(key)
+        if isinstance(sport_data, dict) and sport_data.get(metric) is not None:
+            return float(sport_data[metric])
+
+    if sport == "running" and container.get(metric) is not None:
+        return float(container[metric])
+
+    return None
+
+
+def _vo2max_sport_fields(data: Any) -> Dict[str, float]:
+    """Build explicit running/cycling VO2 max fields from Garmin data."""
+    fields: Dict[str, float] = {}
+    for sport in ("running", "cycling"):
+        value = _extract_vo2max(data, sport)
+        precise = _extract_vo2max_metric(data, sport, "vo2MaxPreciseValue")
+
+        if value is not None:
+            fields[f"vo2_max_{sport}"] = round(value, 1)
+        if precise is not None:
+            fields[f"vo2_max_{sport}_precise"] = round(precise, 1)
+
+        if sport == "running":
+            if value is not None:
+                fields["vo2_max"] = round(value, 1)  # Backward-compatible alias.
+            if precise is not None:
+                fields["vo2_max_precise"] = round(precise, 1)
+
+    return fields
 
 
 def register_tools(app):
@@ -504,8 +581,12 @@ def register_tools(app):
 
             acwr_data = device_data.get("acuteTrainingLoadDTO", {})
 
-            # VO2 Max data
-            vo2_data = status.get("mostRecentVO2Max", {}).get("generic", {})
+            # VO2 Max data. Garmin's max metrics endpoint separates running
+            # ("generic") and cycling VO2 max values.
+            try:
+                vo2_fields = _vo2max_sport_fields(garmin_client.get_max_metrics(date))
+            except Exception:
+                vo2_fields = _vo2max_sport_fields(status)
 
             # Training load balance
             load_balance = status.get("mostRecentTrainingLoadBalance", {})
@@ -533,9 +614,6 @@ def register_tools(app):
                 "acwr_percent": acwr_data.get("acwrPercent"),
                 "optimal_chronic_load_min": acwr_data.get("minTrainingLoadChronic"),
                 "optimal_chronic_load_max": acwr_data.get("maxTrainingLoadChronic"),
-                # VO2 Max
-                "vo2_max": vo2_data.get("vo2MaxValue"),
-                "vo2_max_precise": vo2_data.get("vo2MaxPreciseValue"),
                 # Monthly training load
                 "monthly_load_aerobic_low": load_data.get("monthlyLoadAerobicLow"),
                 "monthly_load_aerobic_high": load_data.get("monthlyLoadAerobicHigh"),
@@ -544,6 +622,7 @@ def register_tools(app):
                     "trainingBalanceFeedbackPhrase"
                 ),
             }
+            curated.update(vo2_fields)
 
             # Remove None values
             curated = {k: v for k, v in curated.items() if v is not None}
@@ -736,7 +815,12 @@ def register_tools(app):
                         .get("latestTrainingStatusData", {})
                     )
                     atl_dto = status_data.get("acuteTrainingLoadDTO", {})
-                    vo2_data = data.get("mostRecentVO2Max", {}).get("generic", {})
+                    try:
+                        vo2_fields = _vo2max_sport_fields(
+                            garmin_client.get_max_metrics(date_str)
+                        )
+                    except Exception:
+                        vo2_fields = _vo2max_sport_fields(data)
                     entry: Dict[str, Any] = {"date": date_str}
                     atl = atl_dto.get("dailyTrainingLoadAcute")
                     ctl = atl_dto.get("dailyTrainingLoadChronic")
@@ -756,9 +840,7 @@ def register_tools(app):
                     ts_label = ts.get("trainingStatusCyclingFeedbackPhrase") or ts.get("trainingStatusFeedbackPhrase")
                     if ts_label:
                         entry["training_status"] = ts_label
-                    vo2 = vo2_data.get("vo2MaxValue")
-                    if vo2 is not None:
-                        entry["vo2_max"] = round(vo2, 1)
+                    entry.update(vo2_fields)
                     if len(entry) > 1:  # has more than just date
                         trend.append(entry)
             except Exception:
@@ -850,12 +932,15 @@ def register_tools(app):
         }, indent=2)
 
     @app.tool()
-    async def get_vo2max_trend(start_date: str, end_date: str) -> str:
+    async def get_vo2max_trend(
+        start_date: str, end_date: str, sport: str = "running"
+    ) -> str:
         """Get VO2 max trend over a date range.
 
-        Returns daily VO2 max estimates from Garmin's FirstBeat algorithm. Use this to track
-        whether training is producing fitness gains over weeks or months. Flat or declining
-        VO2 max over 4+ weeks suggests insufficient training stimulus or overreaching.
+        Returns daily running or cycling VO2 max estimates from Garmin's FirstBeat
+        algorithm. Use this to track whether training is producing fitness gains over
+        weeks or months. Flat or declining VO2 max over 4+ weeks suggests insufficient
+        training stimulus or overreaching.
 
         Note: VO2 max estimates are smoothed and update gradually — daily changes of <0.5
         are within normal noise. Focus on the 4-6 week trend direction.
@@ -865,7 +950,12 @@ def register_tools(app):
         Args:
             start_date: Start date in YYYY-MM-DD format
             end_date: End date in YYYY-MM-DD format
+            sport: Sport-specific VO2 max to return: "running" (default) or "cycling"
         """
+        normalized_sport = _normalize_vo2max_sport(sport)
+        if normalized_sport is None:
+            return 'Invalid sport. Use "running" or "cycling".'
+
         MAX_DAYS = 90
         try:
             start = datetime.date.fromisoformat(start_date)
@@ -885,10 +975,9 @@ def register_tools(app):
         while current <= end:
             date_str = current.isoformat()
             try:
-                data = garmin_client.get_training_status(date_str)
+                data = garmin_client.get_max_metrics(date_str)
                 if data:
-                    vo2_data = data.get("mostRecentVO2Max", {}).get("generic", {})
-                    vo2 = vo2_data.get("vo2MaxValue")
+                    vo2 = _extract_vo2max(data, normalized_sport)
                     if vo2 is not None:
                         vo2_rounded = round(vo2, 1)
                         if vo2_rounded != last_vo2:  # deduplicate unchanged values
@@ -899,7 +988,10 @@ def register_tools(app):
             current += datetime.timedelta(days=1)
 
         if not trend:
-            return f"No VO2 max data found between {start_date} and {end_date}."
+            return (
+                f"No {normalized_sport} VO2 max data found between "
+                f"{start_date} and {end_date}."
+            )
 
         first_vo2 = trend[0]["vo2_max"] if trend else None
         latest_vo2 = trend[-1]["vo2_max"] if trend else None
@@ -908,6 +1000,7 @@ def register_tools(app):
         return json.dumps({
             "start_date": start_date,
             "end_date": end_date,
+            "sport": normalized_sport,
             "data_points": len(trend),
             "first_vo2_max": first_vo2,
             "latest_vo2_max": latest_vo2,

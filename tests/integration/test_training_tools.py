@@ -228,6 +228,60 @@ async def test_get_cycling_ftp_tool(app_with_training, mock_garmin_client):
 
 
 @pytest.mark.asyncio
+async def test_get_vo2max_trend_defaults_to_running(app_with_training, mock_garmin_client):
+    """Test VO2 max trend reads the generic/running max metrics payload by default"""
+    mock_garmin_client.get_max_metrics.side_effect = [
+        [{"generic": {"vo2MaxPreciseValue": 52.4}, "cycling": {"vo2MaxPreciseValue": 48.1}}],
+        [{"generic": {"vo2MaxPreciseValue": 52.9}, "cycling": {"vo2MaxPreciseValue": 48.8}}],
+    ]
+
+    result = await app_with_training.call_tool(
+        "get_vo2max_trend",
+        {"start_date": "2024-01-14", "end_date": "2024-01-15"},
+    )
+
+    mock_garmin_client.get_max_metrics.assert_any_call("2024-01-14")
+    mock_garmin_client.get_max_metrics.assert_any_call("2024-01-15")
+
+    data = json.loads(result[0][0].text)
+    assert data["sport"] == "running"
+    assert data["first_vo2_max"] == 52.4
+    assert data["latest_vo2_max"] == 52.9
+    assert data["trend"] == [
+        {"date": "2024-01-14", "vo2_max": 52.4},
+        {"date": "2024-01-15", "vo2_max": 52.9},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_vo2max_trend_supports_cycling(app_with_training, mock_garmin_client):
+    """Test VO2 max trend reads Garmin's cycling max metrics payload"""
+    mock_garmin_client.get_max_metrics.side_effect = [
+        [{"generic": {"vo2MaxPreciseValue": 52.4}, "cycling": {"vo2MaxPreciseValue": 48.1}}],
+        [{"generic": {"vo2MaxPreciseValue": 52.9}, "cycling": {"vo2MaxPreciseValue": 48.8}}],
+    ]
+
+    result = await app_with_training.call_tool(
+        "get_vo2max_trend",
+        {
+            "start_date": "2024-01-14",
+            "end_date": "2024-01-15",
+            "sport": "cycling",
+        },
+    )
+
+    data = json.loads(result[0][0].text)
+    assert data["sport"] == "cycling"
+    assert data["first_vo2_max"] == 48.1
+    assert data["latest_vo2_max"] == 48.8
+    assert data["change"] == 0.7
+    assert data["trend"] == [
+        {"date": "2024-01-14", "vo2_max": 48.1},
+        {"date": "2024-01-15", "vo2_max": 48.8},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_request_reload_tool(app_with_training, mock_garmin_client):
     """Test request_reload tool"""
     # Setup mock
@@ -260,6 +314,81 @@ async def test_get_training_status_tool(app_with_training, mock_garmin_client):
     # Verify
     assert result is not None
     mock_garmin_client.get_training_status.assert_called_once_with("2024-01-15")
+
+
+@pytest.mark.asyncio
+async def test_get_training_status_splits_vo2max_by_sport(
+    app_with_training, mock_garmin_client
+):
+    """Test training status exposes running and cycling VO2 max separately"""
+    mock_garmin_client.get_training_status.return_value = {
+        "mostRecentTrainingStatus": {"latestTrainingStatusData": {}},
+        "mostRecentTrainingLoadBalance": {},
+    }
+    mock_garmin_client.get_max_metrics.return_value = [
+        {
+            "generic": {"vo2MaxPreciseValue": 52.4},
+            "cycling": {"vo2MaxPreciseValue": 48.1},
+        }
+    ]
+
+    result = await app_with_training.call_tool(
+        "get_training_status",
+        {"date": "2024-01-15"},
+    )
+
+    mock_garmin_client.get_max_metrics.assert_called_once_with("2024-01-15")
+    data = json.loads(result[0][0].text)
+    assert data["vo2_max"] == 52.4
+    assert data["vo2_max_precise"] == 52.4
+    assert data["vo2_max_running"] == 52.4
+    assert data["vo2_max_running_precise"] == 52.4
+    assert data["vo2_max_cycling"] == 48.1
+    assert data["vo2_max_cycling_precise"] == 48.1
+
+
+@pytest.mark.asyncio
+async def test_get_training_load_trend_splits_vo2max_by_sport(
+    app_with_training, mock_garmin_client
+):
+    """Test training load trend exposes running and cycling VO2 max separately"""
+    mock_garmin_client.get_training_status.return_value = {
+        "mostRecentTrainingStatus": {
+            "latestTrainingStatusData": {
+                "acuteTrainingLoadDTO": {
+                    "dailyTrainingLoadAcute": 250.2,
+                    "dailyTrainingLoadChronic": 300.7,
+                }
+            }
+        },
+    }
+    mock_garmin_client.get_max_metrics.return_value = [
+        {
+            "generic": {"vo2MaxPreciseValue": 52.4},
+            "cycling": {"vo2MaxPreciseValue": 48.1},
+        }
+    ]
+
+    result = await app_with_training.call_tool(
+        "get_training_load_trend",
+        {"start_date": "2024-01-15", "end_date": "2024-01-15"},
+    )
+
+    data = json.loads(result[0][0].text)
+    assert data["trend"] == [
+        {
+            "date": "2024-01-15",
+            "atl": 250.2,
+            "ctl": 300.7,
+            "tsb": 50.5,
+            "vo2_max": 52.4,
+            "vo2_max_precise": 52.4,
+            "vo2_max_running": 52.4,
+            "vo2_max_running_precise": 52.4,
+            "vo2_max_cycling": 48.1,
+            "vo2_max_cycling_precise": 48.1,
+        }
+    ]
 
 
 @pytest.mark.asyncio

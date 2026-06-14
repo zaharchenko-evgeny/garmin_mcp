@@ -27,6 +27,7 @@ def mock_garmin_client():
     client.get_blood_pressure = Mock(return_value={})
     client.get_floors = Mock(return_value={})
     client.get_training_status = Mock(return_value={})
+    client.get_max_metrics = Mock(return_value=[])
     client.get_rhr_day = Mock(return_value={})
     client.get_heart_rates = Mock(return_value={})
     client.get_hydration_data = Mock(return_value={})
