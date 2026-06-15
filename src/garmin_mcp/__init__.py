@@ -150,6 +150,31 @@ class _ToolFilter:
 # ---------------------------------------------------------------------------
 
 
+def _persist_tokens(client, directory):
+    """Write the current (possibly refreshed) Garmin tokens to ``directory``."""
+    try:
+        store = getattr(client, "garth", None) or getattr(client, "client", None)
+        if store is not None:
+            os.makedirs(directory, exist_ok=True)
+            store.dump(directory)
+    except Exception as exc:  # never let token persistence crash the server
+        print(f"Token persist warning: {exc}", file=sys.stderr)
+
+
+def _start_token_persister(client, directory, interval=1800):
+    """Persist tokens every ``interval`` seconds so in-session refresh-token
+    rotations are saved and survive container restarts."""
+    import threading
+    import time
+
+    def _loop():
+        while True:
+            time.sleep(interval)
+            _persist_tokens(client, directory)
+
+    threading.Thread(target=_loop, daemon=True, name="garmin-token-persister").start()
+
+
 def init_api(email, password):
     """Initialize Garmin API with your credentials."""
     import io
@@ -161,14 +186,26 @@ def init_api(email, password):
             file=sys.stderr,
         )
 
-        # Prefer a base64-encoded token file when present. This is the headless
-        # path: garminconnect.login() accepts the decoded token JSON string
-        # directly, so no token directory needs to exist on the host.
-        login_arg = tokenstore
+        # Token source priority for headless / container use:
+        #   1. A persisted token directory (a read-write volume) kept current by
+        #      the background writer below, so refreshed tokens survive restarts.
+        #   2. Otherwise bootstrap once from a base64 token file.
+        # garminconnect.login() accepts either a directory path or the decoded
+        # token JSON string directly.
+        expanded_dir = os.path.expanduser(tokenstore)
+        has_dir_tokens = os.path.isdir(expanded_dir) and any(
+            f.endswith(".json") for f in os.listdir(expanded_dir)
+        )
         b64_file = os.path.expanduser(tokenstore_base64)
-        if os.path.isfile(b64_file):
+        login_arg = tokenstore
+        if has_dir_tokens:
             print(
-                f"Trying to login to Garmin Connect using base64 token file '{tokenstore_base64}'...\n",
+                f"Trying to login to Garmin Connect using token directory '{tokenstore}'...\n",
+                file=sys.stderr,
+            )
+        elif os.path.isfile(b64_file):
+            print(
+                f"Bootstrapping Garmin login from base64 token file '{tokenstore_base64}'...\n",
                 file=sys.stderr,
             )
             with open(b64_file, "r") as token_file:
@@ -183,6 +220,13 @@ def init_api(email, password):
             garmin.login(login_arg)
         finally:
             sys.stderr = old_stderr
+
+        # Persist the (possibly refreshed/rotated) tokens to the directory and
+        # keep persisting periodically, so a later restart loads a current token
+        # rather than a stale one (the cause of "Failed to retrieve social
+        # profile" after refresh-token rotation).
+        _persist_tokens(garmin, expanded_dir)
+        _start_token_persister(garmin, expanded_dir)
 
     except (FileNotFoundError, GarminConnectConnectionError, GarminConnectTooManyRequestsError, GarminConnectAuthenticationError):
         # Session is expired. You'll need to log in again
