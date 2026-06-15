@@ -407,6 +407,20 @@ def main():
         port = int(os.getenv("GARMIN_MCP_PORT", "8000"))
         app.settings.host = host
         app.settings.port = port
+        # mcp>=1.25 enables DNS-rebinding protection by default, which rejects
+        # requests whose Host header isn't an allowed host (returns HTTP 421).
+        # This backend is reached only over a private network (loopback + the
+        # internal Docker network behind the OAuth gateway), so disable the
+        # check — otherwise the gateway's "garmin:8000" Host is refused and no
+        # tools are listed.
+        try:
+            from mcp.server.transport_security import TransportSecuritySettings
+
+            app.settings.transport_security = TransportSecuritySettings(
+                enable_dns_rebinding_protection=False
+            )
+        except Exception as exc:  # older SDKs without transport_security
+            print(f"transport_security config skipped: {exc}", file=sys.stderr)
         print(
             f"Starting Garmin MCP over streamable-http on {host}:{port}/mcp",
             file=sys.stderr,
