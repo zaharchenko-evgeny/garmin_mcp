@@ -20,8 +20,9 @@ def register_tools(app):
     
     @app.tool()
     async def add_body_composition(
-        date: str,
         weight: float,
+        date: Optional[str] = None,
+        timestamp: Optional[str] = None,
         percent_fat: Optional[float] = None,
         percent_hydration: Optional[float] = None,
         visceral_fat_mass: Optional[float] = None,
@@ -37,8 +38,9 @@ def register_tools(app):
         """Add body composition data
         
         Args:
-            date: Date in YYYY-MM-DD format
             weight: Weight in kg
+            date: Measurement date in YYYY-MM-DD format. Deprecated; use timestamp.
+            timestamp: Measurement timestamp in ISO format.
             percent_fat: Body fat percentage
             percent_hydration: Hydration percentage
             visceral_fat_mass: Visceral fat mass
@@ -52,8 +54,12 @@ def register_tools(app):
             bmi: Body Mass Index
         """
         try:
+            measurement_timestamp = timestamp or date
+            if measurement_timestamp is None:
+                return "Error adding body composition data: date or timestamp is required"
+
             result = garmin_client.add_body_composition(
-                date,
+                measurement_timestamp,
                 weight=weight,
                 percent_fat=percent_fat,
                 percent_hydration=percent_hydration,

@@ -214,44 +214,6 @@ async def test_add_weigh_in_with_timestamps_tool(app_with_weight, mock_garmin_cl
     # Note: function has optional date_timestamp and gmt_timestamp parameters
 
 
-@pytest.mark.asyncio
-async def test_add_body_composition_tool(app_with_weight, mock_garmin_client):
-    """Test add_body_composition tool"""
-    add_response = {"status": "success", "uploadId": 12348}
-    mock_garmin_client.add_body_composition.return_value = add_response
-    result = await app_with_weight.call_tool(
-        "add_body_composition",
-        {
-            "timestamp": "2024-01-15T07:30:00",
-            "weight": 70.5,
-            "percent_fat": 15.2,
-            "percent_hydration": 58.1,
-            "bone_mass": 3.2,
-            "muscle_mass": 55.0,
-            "basal_met": 1700,
-            "metabolic_age": 35,
-            "visceral_fat_rating": 8,
-            "bmi": 22.4,
-        },
-    )
-    assert result is not None
-    mock_garmin_client.add_body_composition.assert_called_once_with(
-        timestamp="2024-01-15T07:30:00",
-        weight=70.5,
-        percent_fat=15.2,
-        percent_hydration=58.1,
-        visceral_fat_mass=None,
-        bone_mass=3.2,
-        muscle_mass=55.0,
-        basal_met=1700,
-        active_met=None,
-        physique_rating=None,
-        metabolic_age=35,
-        visceral_fat_rating=8,
-        bmi=22.4,
-    )
-
-
 # User Profile module tests
 @pytest.fixture
 def app_with_user_profile(mock_garmin_client):
@@ -310,7 +272,7 @@ def app_with_data_management(mock_garmin_client):
 
 
 @pytest.mark.asyncio
-async def test_add_body_composition_tool(app_with_data_management, mock_garmin_client):
+async def test_data_management_add_body_composition_date_tool(app_with_data_management, mock_garmin_client):
     """Test add_body_composition tool"""
     add_response = {"status": "success", "message": "Body composition added"}
     mock_garmin_client.add_body_composition.return_value = add_response
@@ -333,6 +295,44 @@ async def test_add_body_composition_tool(app_with_data_management, mock_garmin_c
         metabolic_age=None,
         visceral_fat_rating=None,
         bmi=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_data_management_add_body_composition_timestamp_tool(app_with_data_management, mock_garmin_client):
+    """Test add_body_composition accepts timestamp for scale measurements"""
+    add_response = {"status": "success", "uploadId": 12348}
+    mock_garmin_client.add_body_composition.return_value = add_response
+    result = await app_with_data_management.call_tool(
+        "add_body_composition",
+        {
+            "timestamp": "2024-01-15T07:30:00",
+            "weight": 70.5,
+            "percent_fat": 15.2,
+            "percent_hydration": 58.1,
+            "bone_mass": 3.2,
+            "muscle_mass": 55.0,
+            "basal_met": 1700,
+            "metabolic_age": 35,
+            "visceral_fat_rating": 8,
+            "bmi": 22.4,
+        },
+    )
+    assert result is not None
+    mock_garmin_client.add_body_composition.assert_called_once_with(
+        "2024-01-15T07:30:00",
+        weight=70.5,
+        percent_fat=15.2,
+        percent_hydration=58.1,
+        visceral_fat_mass=None,
+        bone_mass=3.2,
+        muscle_mass=55.0,
+        basal_met=1700,
+        active_met=None,
+        physique_rating=None,
+        metabolic_age=35,
+        visceral_fat_rating=8,
+        bmi=22.4,
     )
 
 
