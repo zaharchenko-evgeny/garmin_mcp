@@ -212,4 +212,63 @@ def register_tools(app):
         except Exception as e:
             return f"Error adding weight measurement with timestamps: {str(e)}"
 
+    @app.tool()
+    async def add_body_composition(
+        weight: float,
+        timestamp: str = None,
+        percent_fat: float = None,
+        percent_hydration: float = None,
+        visceral_fat_mass: float = None,
+        bone_mass: float = None,
+        muscle_mass: float = None,
+        basal_met: float = None,
+        active_met: float = None,
+        physique_rating: float = None,
+        metabolic_age: float = None,
+        visceral_fat_rating: float = None,
+        bmi: float = None,
+    ) -> str:
+        """Add body composition data from a weight-scale measurement.
+
+        Args:
+            weight: Weight in kilograms
+            timestamp: Measurement timestamp in ISO format; defaults to now
+            percent_fat: Body fat percentage
+            percent_hydration: Body water percentage
+            visceral_fat_mass: Visceral fat mass
+            bone_mass: Bone mass in kilograms
+            muscle_mass: Muscle mass in kilograms
+            basal_met: Basal metabolic rate in kcal
+            active_met: Active metabolic rate in kcal
+            physique_rating: Physique rating
+            metabolic_age: Metabolic age
+            visceral_fat_rating: Visceral fat rating/score
+            bmi: Body mass index
+        """
+        try:
+            result = garmin_client.add_body_composition(
+                timestamp=timestamp,
+                weight=weight,
+                percent_fat=percent_fat,
+                percent_hydration=percent_hydration,
+                visceral_fat_mass=visceral_fat_mass,
+                bone_mass=bone_mass,
+                muscle_mass=muscle_mass,
+                basal_met=basal_met,
+                active_met=active_met,
+                physique_rating=physique_rating,
+                metabolic_age=metabolic_age,
+                visceral_fat_rating=visceral_fat_rating,
+                bmi=bmi,
+            )
+            return json.dumps({
+                "status": "success",
+                "weight": weight,
+                "timestamp": timestamp,
+                "message": "Body composition measurement added successfully",
+                "response": result,
+            }, indent=2)
+        except Exception as e:
+            return f"Error adding body composition measurement: {str(e)}"
+
     return app
